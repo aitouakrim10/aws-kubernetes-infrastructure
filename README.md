@@ -1,85 +1,66 @@
-# AWS Terraform Project
+# AWS Kubernetes Cluster with Terraform and Ansible
 
-![Terraform](https://img.shields.io/badge/Terraform-7B42BC?style=for-the-badge&logo=terraform&logoColor=white)
-![AWS](https://img.shields.io/badge/AWS-232F3E?style=for-the-badge&logo=amazon-aws&logoColor=white)
-![Ansible](https://img.shields.io/badge/Ansible-EE0000?style=for-the-badge&logo=ansible&logoColor=white)
-![Linux](https://img.shields.io/badge/Linux-FCC624?style=for-the-badge&logo=linux&logoColor=black)
-![GitHub](https://img.shields.io/badge/GitHub-181717?style=for-the-badge&logo=github&logoColor=white)
+This project provisions an AWS environment with Terraform and configures a small Kubernetes cluster with Ansible.
 
-This project creates a simple AWS architecture with a VPC, public subnets, a security group, and EC2 instances using Terraform, with Ansible support for configuration management and provisioning workflows.
+The cluster contains:
 
-## Project overview
+- 1 Kubernetes control-plane node: `master`
+- 2 Kubernetes worker nodes: `worker1` and `worker2`
+- 1 VPC with CIDR `10.0.0.0/16`
+- 2 public subnets: `10.0.1.0/24` and `10.0.2.0/24`
+- 3 EC2 instances with public IP addresses
+- Docker, `kubeadm`, `kubelet`, and `kubectl` installed on every node
 
-The infrastructure includes:
-- VPC
-- Internet Gateway
-- Public route table
-- Two public subnets
-- EC2 instances in each subnet
-- Security group allowing ICMP traffic
-- Ansible playbooks for automation and server setup
-- Outputs for the public IP and SG IDs
+## Cluster infrastructure
+![system topologie](images/topo.png)
+
+## Cluster Architecture
+
+![alt text](images/arch.png)
+
+## Architecture
+
+```text
+AWS Region: eu-north-1
+└── VPC 10.0.0.0/16
+    ├── Public subnet 10.0.1.0/24
+    │   └── master
+    └── Public subnet 10.0.2.0/24
+        ├── worker1
+        └── worker2
+```
+
+Terraform creates the VPC, internet gateway, public route table, public subnets, security group, SSH key pair, and EC2 instances. Ansible then prepares the operating systems, initializes the master, and joins the workers to the cluster.
 
 ## Repository structure
 
 ```text
-
+.
 ├── README.md
-├── images/
-│   ├── ...
-├── terraform/
-│   ├── main.tf
-│   ├── variables.tf
-│   ├── outputs.tf
-│   └── terraform.tfstate
-└── keys/
-    └── ...
+├── ansible/
+│   ├── ansible.cfg
+│   ├── inventory/inventory.yaml
+│   ├── playbooks/cluster-k8s.yaml
+│   └── roles/
+│       ├── common/    # Common packages and Kubernetes prerequisites
+│       ├── master/    # kubeadm init and control-plane configuration
+│       └── worker/    # kubeadm join
+├── images/            # Architecture images
+├── keys/              # Generated private SSH key
+└── terraform/
+    ├── main.tf
+    ├── variables.tf
+    └── outputs.tf
 ```
 
-## Architecture
-
-![Architecture](./images/arch.png)
-
-```text
-Internet
-   │
-   ▼
-Internet Gateway
-   │
-   ▼
-VPC 10.0.0.0/16
-   ├── Subnet 1: 10.0.1.0/24
-   │      └── master
-   └── Subnet 2: 10.0.2.0/24
-          └── nodes
-```
-
-## Topology
-
-![topology](images/topo.png)
-
-
-## Terraform resources used
-
-This project uses the following Terraform resources:
-- `aws_vpc`
-- `aws_internet_gateway`
-- `aws_route_table`
-- `aws_subnet`
-- `aws_route_table_association`
-- `aws_security_group`
-- `aws_instance`
-- `output`
-
-## Terraform graph
-
-![Terraform graph](./images/graph.png)
 ## Prerequisites
 
-Before running Terraform, make sure you have:
-- Terraform installed
-- AWS CLI installed and configured
-- An AWS account with permissions to create EC2 resources
+Install and configure:
+
+- AWS CLI
+- Terraform
+- Ansible
+- Graphviz, only if you want to generate Terraform diagrams
 
 Configure AWS credentials:
 
@@ -87,107 +68,111 @@ Configure AWS credentials:
 aws configure
 ```
 
-## Terraform commands
+The Ansible role uses Debian/Ubuntu `apt` packages. Use an Ubuntu AMI compatible with the repository configuration, such as Ubuntu 24.04, in `terraform/variables.tf`.
 
-Initialize the project:
+The security group currently allows SSH and ICMP from `0.0.0.0/0`. Restrict these rules before using this project in production.
+
+## 1. Provision AWS infrastructure
+
+From the repository root:
 
 ```bash
 cd terraform
 terraform init
-```
-
-Validate syntax:
-
-```bash
 terraform validate
-```
-
-Preview changes:
-
-```bash
 terraform plan
+terraform apply
 ```
 
-Deploy infrastructure:
+Display the public IP addresses:
 
 ```bash
-terraform apply --auto-approve
+terraform output
 ```
 
-Destroy infrastructure:
+Copy the resulting public IPs into `ansible/inventory/inventory.yaml`:
+
+```yaml
+all:
+  children:
+    masters:
+      hosts:
+        master:
+          ansible_host: "MASTER_PUBLIC_IP"
+    nodes:
+      hosts:
+        worker1:
+          ansible_host: "WORKER1_PUBLIC_IP"
+        worker2:
+          ansible_host: "WORKER2_PUBLIC_IP"
+```
+
+Keep the correct SSH user and private key path in the inventory. The generated key is stored at `keys/nb-key-pair.pem`.
+
+## 2. Configure the Kubernetes cluster
+
+Test SSH connectivity first:
 
 ```bash
-terraform destroy --auto-approve
+cd ansible
+ansible all -m ping
 ```
 
-## Useful AWS CLI commands
-
-List available AMIs for Ubuntu in eu-north-1:
+Run the complete playbook:
 
 ```bash
-aws ec2 describe-images \
-  --owners 099720109477 \
-  --region eu-north-1 \
-  --filters \
-    "Name=name,Values=ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*" \
-    "Name=state,Values=available" \
-  --query 'Images[*].[ImageId,Name,CreationDate]' \
-  --output table
+ansible-playbook -i inventory/inventory.yaml playbooks/cluster-k8s.yaml
 ```
 
-List free-tier eligible instance types:
+The playbook runs these stages:
+
+1. `common`: updates hosts, disables swap, installs Docker and Kubernetes packages, and starts required services.
+2. `master`: runs `kubeadm init`, configures the master kubeconfig, installs Flannel, and creates the worker join command.
+3. `worker`: reads the join command from the master and runs `kubeadm join` on `worker1` and `worker2`.
+
+## 3. Verify the cluster
+
+On the master node:
 
 ```bash
-aws ec2 describe-instance-types \
-  --filters "Name=free-tier-eligible,Values=true" \
-  --query "InstanceTypes[*].InstanceType" \
-  --output table
+kubectl get nodes
+kubectl get pods --all-namespaces
 ```
 
-List EC2 instances:
+The master and both workers should eventually appear as `Ready`.
+
+## Useful commands
+
+Check the inventory without changing hosts:
 
 ```bash
-aws ec2 describe-instances --output table
+cd ansible
+ansible-inventory -i inventory/inventory.yaml --graph
 ```
 
-List security groups:
+Validate the playbook syntax:
 
 ```bash
-aws ec2 describe-security-groups --output table
+ansible-playbook -i inventory/inventory.yaml playbooks/cluster-k8s.yaml --syntax-check
 ```
 
-Show instance public IP:
-
-```bash
-aws ec2 describe-instances \
-  --query 'Reservations[*].Instances[*].[InstanceId,PublicIpAddress,State.Name]' \
-  --output table
-```
-
-## Generate architecture diagrams
-
-From the `terraform` folder, generate the graph PNG files:
+Regenerate Terraform dependency diagrams from `terraform/`:
 
 ```bash
 terraform graph -type=plan | dot -Tpng > ../images/graph.png
 terraform graph | dot -Tpng > ../images/arch.png
 ```
 
-Then open them locally:
+Destroy the AWS infrastructure when finished:
 
 ```bash
-eog ../images/arch.png
-eog ../images/graph.png
+cd terraform
+terraform destroy
 ```
 
-## Notes
+## Security notes
 
-- `0.0.0.0/0` means all IPv4 addresses are allowed.
-- For production, prefer restricting ingress by a specific CIDR or your office/public IP.
-- If ping is not working, check the EC2 security group and the instance firewall configuration.
-
-## Useful links
-
-- Terraform AWS provider docs
-- AWS EC2 docs
-- AWS security group documentation
+- Never commit private keys or cloud credentials.
+- Restrict SSH access to your own public IP instead of `0.0.0.0/0`.
+- Restrict Kubernetes and cluster traffic according to your network design.
+- Review the Terraform state file before sharing the repository; it can contain infrastructure details.
