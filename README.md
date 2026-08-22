@@ -42,11 +42,11 @@ Terraform creates the VPC, internet gateway, public route table, public subnets,
 │   ├── inventory/inventory.yaml
 │   ├── playbooks/cluster-k8s.yaml
 │   └── roles/
-│       ├── common/    # Common packages and Kubernetes prerequisites
-│       ├── master/    # kubeadm init and control-plane configuration
-│       └── worker/    # kubeadm join
-├── images/            # Architecture images
-├── keys/              # Generated private SSH key
+│       ├── common/    
+│       ├── master/   
+│       └── worker/   
+├── images/            
+├── keys/              
 └── terraform/
     ├── main.tf
     ├── variables.tf
